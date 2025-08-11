@@ -21,59 +21,33 @@ class MemoryCleanupCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         gc.collect()
 
-class DataProcessor:
-    def __init__(self, seq_len=130, seq_col='sequence', label_col='half_life'):
-        self.seq_len = seq_len
-        self.seq_col = seq_col
-        self.label_col = label_col
-        self.scaler = StandardScaler()
-        self.binner = KBinsDiscretizer(n_bins=10, encode='ordinal')
+def load_and_filter_data(cfg):
+    data = pd.read_csv(cfg.data.input_csv)
+    mask = ~data['sequence'].str.upper().str.contains('N', na=False)
+    data = data[mask].copy()
+    data = data[data['sequence'].apply(len) == 130].reset_index(drop=True)
 
-    def filter_data(self, csv_path):
-        data = pd.read_csv(csv_path)
-        mask = ~data[self.seq_col].str.upper().str.contains('N', na=False)
-        data = data[mask].copy()
-        data = data[data[self.seq_col].apply(len) == self.seq_len].reset_index(drop=True)
-        return data
+    seq_len = len(data['sequence'].iloc[0])
+    ppm_len = seq_len
+    y = data['half_life'].values
 
-    def split_and_save(self, data, output_dir, test_size=0.2, random_state=42):
-        y = data[self.label_col].values
-        stratify_vals = self.binner.fit_transform(y.reshape(-1, 1))
-        
-        indices = np.arange(len(data))  # 保留索引对应
-        
-        # 先划分data和标签以及索引，保持对应
-        train_idx, test_idx = train_test_split(
-            indices, test_size=test_size, random_state=random_state, stratify=stratify_vals
-        )
-        
-        train_df = data.iloc[train_idx].reset_index(drop=True)
-        test_df = data.iloc[test_idx].reset_index(drop=True)
+    stand = StandardScaler()
+    y_transformed = stand.fit_transform(y.reshape(-1, 1))
 
-        os.makedirs(output_dir, exist_ok=True)
-        print("Saving test set...")
-        train_df.to_csv(os.path.join(output_dir, 'train.csv'), index=False)
-        test_df.to_csv(os.path.join(output_dir, 'test.csv'), index=False)
-        print("train:",train_df.shape)
-        print("test:",test_df.shape)
+    est = KBinsDiscretizer(n_bins=10, encode='ordinal')
+    encoded_vals = est.fit_transform(y.reshape(-1, 1))
 
-        return train_df, test_df
+    utrs = util.one_hot_encode(data[['sequence']])
+    indices = np.arange(utrs.shape[0])
+    return utrs, y_transformed, encoded_vals, indices, seq_len, ppm_len
 
-
-
-    def transform_labels(self, y, fit=False):
-        if fit:
-            return self.scaler.fit_transform(y.reshape(-1, 1))
-        else:
-            return self.scaler.transform(y.reshape(-1, 1))
-
-def create_dataset(sequences, y, batch_size, seq_len, ppm_len):
+def create_dataset(x1, y, batch_size, seq_len, ppm_len):
     def generator():
-        for i in range(0, len(sequences), batch_size):
-            batch_seq = util.one_hot_encode(sequences.iloc[i:i+batch_size])
-            batch_ppm = GA_util.prototype_ppms_fast(batch_seq)
+        for i in range(0, len(x1), batch_size):
+            batch_x1 = x1[i:i+batch_size]
+            batch_x2 = GA_util.prototype_ppms_fast(batch_x1)
             batch_y = y[i:i+batch_size]
-            yield (batch_seq, batch_ppm), batch_y
+            yield (batch_x1, batch_x2), batch_y
 
     output_signature = (
         (
@@ -93,32 +67,20 @@ def main(cfg: DictConfig):
             print(f"Using GPU: {gpus[0].name}")
         except RuntimeError as e:
             print(e)
-    print("Training parameters:")
-    print(f"  batch size: {cfg.train.batch_size}")
-    print(f"  epochs: {cfg.train.epoch_num}")
-    print(f"  learning rate: {cfg.train.learning_rate}")
-    print(f"  latent_dim: {cfg.train.latent_dim}")
-    print(f"  input csv: {cfg.data.input_csv}")
-    print(f"  split directory: {cfg.data.split_dir}")
-    print(f"  model save directory: {cfg.train.save_dir}")
 
-    processor = DataProcessor()
-    filtered_data = processor.filter_data(cfg.data.input_csv)
-    print("Loading dataset...",filtered_data.shape)
-    train_df, test_df = processor.split_and_save(filtered_data, cfg.data.split_dir)
-    print("Split train and test")
+    utrs, y_transformed, encoded_vals, indices, seq_len, ppm_len = load_and_filter_data(cfg)
 
-    y_train = processor.transform_labels(train_df['half_life'].values, fit=True)
-    y_test = processor.transform_labels(test_df['half_life'].values)
-    
-    print("calculating test set ppm")
-    
-    utr_test = util.one_hot_encode(test_df[['sequence']])
-    ppm_test = GA_util.prototype_ppms_fast(utr_test) #error
-    
-    print("Create training set")
-    train_dataset = create_dataset(train_df[['sequence']], y_train, cfg.train.batch_size, processor.seq_len, processor.seq_len)
+    utr_train, utr_test, y_train, y_test, _, _ = train_test_split(
+        utrs, y_transformed, indices, test_size=0.2, stratify=encoded_vals, random_state=42)
 
+    np.save('utr_test.npy', utr_test)
+    np.save('y_test.npy', y_test)
+
+    num_samples = (len(utr_train) // cfg.train.batch_size) * cfg.train.batch_size
+    utr_train, y_train = utr_train[:num_samples], y_train[:num_samples]
+
+    train_dataset = create_dataset(utr_train, y_train, cfg.train.batch_size, seq_len, ppm_len)
+    ppm_test = GA_util.prototype_ppms_fast(utr_test)
 
     resume_path = getattr(cfg.train, 'resume_path', None)
     if resume_path and os.path.exists(resume_path):
@@ -126,8 +88,8 @@ def main(cfg: DictConfig):
         joint_model = load_model(resume_path)
     else:
         joint_model = GA_util.create_SANDSTORM(
-            seq_len=processor.seq_len,
-            ppm_len=processor.seq_len,
+            seq_len=seq_len,
+            ppm_len=ppm_len,
             latent_dim=cfg.train.latent_dim,
             internal_activation=cfg.model.internal_activation
         )
