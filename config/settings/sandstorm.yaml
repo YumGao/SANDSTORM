@@ -1,0 +1,3 @@
+hydra_name: sandstorm
+model:
+  internal_activation: relu
