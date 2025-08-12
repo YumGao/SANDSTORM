@@ -1,6 +1,7 @@
 defaults:
-  - settings: sandstorm
+  - settings/sandstorm
 
+hydra_name: sandstorm
 hydra:
   run:
     dir: ./hydra_train/${now:%Y-%m-%d_%H-%M-%S}_${hydra_name}
@@ -11,14 +12,15 @@ hydra:
     chdir: True
 
 train:
-  epoch_num: 800
+  epoch_num: 1
   iterations: 1
   latent_dim: 128
   learning_rate: 0.001
-  batch_size: 1248
+  batch_size: 1024
   save_dir: ./saved_model
 
 model_name: sandstorm
 
 data:
   input_csv: /home/nanoribo/NGSprocessing/CELL_IVT/feature/mRNA_halflife_highquaset_withfeatures.csv
+  split_dir: ./data/
