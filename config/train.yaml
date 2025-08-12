@@ -17,7 +17,8 @@ train:
   latent_dim: 128
   learning_rate: 0.001
   batch_size: 1024
-  save_dir: ./saved_model
+  save_dir: ./
+  seed: 42 
 
 model_name: sandstorm
 
