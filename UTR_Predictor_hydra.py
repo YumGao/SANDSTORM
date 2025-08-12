@@ -58,15 +58,31 @@ def create_dataset(x1, y, max_len, batch_size):
     )
     return tf.data.Dataset.from_generator(generator, output_signature=output_signature).prefetch(tf.data.AUTOTUNE)
 
+def create_val_dataset(x1, y, max_len, batch_size):
+    def generator():
+        for i in range(0, len(x1), batch_size):
+            batch_x1 = x1[i:i+batch_size]
+            batch_x2 = GA_util.prototype_ppms_fast(batch_x1)
+            batch_y = y[i:i+batch_size]
+            yield (batch_x1, batch_x2), batch_y
 
+    output_signature = (
+        (
+            tf.TensorSpec(shape=(None, 4, max_len), dtype=tf.float32),  # None for batch dim
+            tf.TensorSpec(shape=(None, max_len, max_len), dtype=tf.float32)
+        ),
+        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)
+    )
+    return tf.data.Dataset.from_generator(generator, output_signature=output_signature).prefetch(tf.data.AUTOTUNE)
 
+# Then in main(), replace validation_data with:
 
 def load_and_filter_data(input_csv):
     """Load CSV and filter valid sequences."""
     df = pd.read_csv(input_csv)
     mask = ~df['sequence'].str.upper().str.contains('N', na=False)
     df = df[mask].copy()
-    df = df[df['sequence'].apply(len) == 120].reset_index(drop=True)
+    df = df[df['sequence'].apply(len) == 130].reset_index(drop=True)
     max_len = df["sequence"].str.len().max()
     return df,max_len
 
@@ -123,13 +139,17 @@ def main(cfg: DictConfig):
         batch_size=cfg.train.batch_size
         
     )
+    val_dataset = create_val_dataset(
+        seq_test, y_test, 
+        max_len=max_len, 
+        batch_size=cfg.train.batch_size)
+
+
 
     # Training iterations
     for i in range(cfg.train.iterations):
         print(f"=== Iteration {i+1}/{cfg.train.iterations} ===")
 
-        # Precompute PPM for test set
-        ppm_test = GA_util.prototype_ppms_fast(seq_test)
 
         # Create model
         joint_model = GA_util.create_SANDSTORM(
@@ -147,7 +167,7 @@ def main(cfg: DictConfig):
         hist = joint_model.fit(
             train_dataset,
             epochs=cfg.train.epoch_num,
-            validation_data=([seq_test, ppm_test], y_test),
+            validation_data=(val_dataset),
             callbacks=[MemoryCleanupCallback()]
         )
 
