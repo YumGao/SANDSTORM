@@ -18,9 +18,7 @@ from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from sklearn.metrics import r2_score
 from scipy.stats import spearmanr
 from tensorflow.keras.optimizers import Adam
-
-print('Modules loaded.')
-
+import random
 # Model parameters
 epoch_num = 1
 iterations = 1
@@ -28,13 +26,21 @@ latent_dim = 128
 learning_rate = 0.001
 batch_size = 1024
 
+seed = 42
+random.seed(seed)
+np.random.seed(seed)
+tf.random.set_seed(seed)
+
+print('Modules loaded.')
+
+
 # Load and filter input data
 data = pd.read_csv('/home/nanoribo/NGSprocessing/CELL_IVT/feature/mRNA_halflife_highquaset_withfeatures.csv')
 #data.to_csv('/home/nanoribo/NGSprocessing/CELL_IVT/feature/mRNA_halflife_highquaset_withfeatures_10.csv',index=False)
 
 mask = ~data['sequence'].str.upper().str.contains('N', na=False)
 data = data[mask].copy()
-data = data[data['sequence'].apply(len) == 130].reset_index(drop=True)
+data = data[data['sequence'].apply(len) == 120].reset_index(drop=True)
 
 # Feature and label extraction
 seq_len = len(data['sequence'].iloc[0])

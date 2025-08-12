@@ -12,6 +12,8 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from tensorflow.keras.optimizers import Adam
+import random
+
 
 # Add custom module path
 sys.path.insert(1, "/home/nanoribo/SANDSTORM/GARDN-SANDSTORM-main/src")
@@ -56,12 +58,15 @@ def create_dataset(x1, y, max_len, batch_size):
     )
     return tf.data.Dataset.from_generator(generator, output_signature=output_signature).prefetch(tf.data.AUTOTUNE)
 
+
+
+
 def load_and_filter_data(input_csv):
     """Load CSV and filter valid sequences."""
     df = pd.read_csv(input_csv)
     mask = ~df['sequence'].str.upper().str.contains('N', na=False)
     df = df[mask].copy()
-    df = df[df['sequence'].apply(len) == 130].reset_index(drop=True)
+    df = df[df['sequence'].apply(len) == 120].reset_index(drop=True)
     max_len = df["sequence"].str.len().max()
     return df,max_len
 
@@ -98,6 +103,11 @@ def prepare_features_and_split(df, max_len, batch_size):
 
 @hydra.main(config_path="./config", config_name="train", version_base=None)
 def main(cfg: DictConfig):
+    seed = cfg.train.seed
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    
     setup_gpu()
 
     print("Hydra configuration loaded:")
