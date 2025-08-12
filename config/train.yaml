@@ -24,4 +24,6 @@ model_name: sandstorm
 
 data:
   input_csv: /home/nanoribo/NGSprocessing/CELL_IVT/feature/mRNA_halflife_highquaset_withfeatures.csv
-  split_dir: ./data/
+  split_dir: /home/nanoribo/SANDSTORM/data/
+  holdout_test_ratio: 0.05
+  val_ratio: 0.05

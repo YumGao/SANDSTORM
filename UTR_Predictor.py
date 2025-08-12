@@ -41,7 +41,7 @@ data = pd.read_csv('/home/nanoribo/NGSprocessing/CELL_IVT/feature/mRNA_halflife_
 mask = ~data['sequence'].str.upper().str.contains('N', na=False)
 data = data[mask].copy()
 data = data[data['sequence'].apply(len) == 120].reset_index(drop=True)
-
+print("data", data.shape)
 # Feature and label extraction
 seq_len = len(data['sequence'].iloc[0])
 ppm_len = seq_len

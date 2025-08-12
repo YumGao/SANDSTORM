@@ -77,17 +77,43 @@ def create_val_dataset(x1, y, max_len, batch_size):
 
 # Then in main(), replace validation_data with:
 
-def load_and_filter_data(input_csv):
-    """Load CSV and filter valid sequences."""
-    df = pd.read_csv(input_csv)
+
+def save_split_dfs(trainval_df, test_df, base_dir, trainval_test_ratio, max_len):
+    split_dir = os.path.join(base_dir, f"trainval{1-trainval_test_ratio}_test{trainval_test_ratio}_len{max_len}")
+    os.makedirs(split_dir, exist_ok=True)
+
+    trainval_path = os.path.join(split_dir, "trainval.csv")
+    test_path = os.path.join(split_dir, "test.csv")
+
+    trainval_df.to_csv(trainval_path, index=False)
+    test_df.to_csv(test_path, index=False)
+
+    return split_dir, trainval_path, test_path
+
+
+def load_and_filter_data(cfg):
+    df = pd.read_csv(cfg.data.input_csv)
     mask = ~df['sequence'].str.upper().str.contains('N', na=False)
     df = df[mask].copy()
-    df = df[df['sequence'].apply(len) == 130].reset_index(drop=True)
+    df = df[df['sequence'].apply(len) == 120].reset_index(drop=True)
     max_len = df["sequence"].str.len().max()
-    return df,max_len
+
+    # Split train_val and test by ratio from config
+    #trainval_ratio = 1 - cfg.data.holdout_test_ratio
+    trainval_df, test_df = train_test_split(df, test_size=cfg.data.holdout_test_ratio, random_state=42)
+    print(f"Spliting holdout test set: \n\ttrain & val ({1 - cfg.data.holdout_test_ratio},{trainval_df.shape})\n\ttest ({cfg.data.holdout_test_ratio},{test_df.shape})")
+
+    # Save splits
+    split_dir, trainval_path, test_path = save_split_dfs(trainval_df, test_df, cfg.data.split_dir, cfg.data.holdout_test_ratio, max_len)
+
+    print(f"Saved trainval to {trainval_path}")
+    print(f"Saved test to {test_path}")
+
+    return trainval_df, max_len
 
 
-def prepare_features_and_split(df, max_len, batch_size):
+
+def prepare_features_and_split(df, max_len, batch_size,val_size):
     """Transform labels, encode sequences, split dataset, and save test sets."""
     y = df['half_life'].values
 
@@ -100,11 +126,18 @@ def prepare_features_and_split(df, max_len, batch_size):
     # One-hot encode sequences
     utrs = util.one_hot_encode(df[['sequence']])
     indices = np.arange(utrs.shape[0])
+    holdout_test_ratio: 0.05
+
 
     # Train/test split
-    utr_train, utr_test, y_train, y_test, _, _ = train_test_split(
-        utrs, y_transformed, indices,
-        test_size=0.2, stratify=encoded_vals, random_state=42
+
+    utr_train, utr_val, y_train, y_val, _, _ = train_test_split(
+        utrs,
+        y_transformed,
+        indices,
+        test_size=val_size,    
+        stratify=encoded_vals,
+        random_state=42
     )
 
     # Save test sets
@@ -115,7 +148,7 @@ def prepare_features_and_split(df, max_len, batch_size):
     num_samples = (len(utr_train) // batch_size) * batch_size
     utr_train, y_train = utr_train[:num_samples], y_train[:num_samples]
 
-    return utr_train, utr_test, y_train, y_test
+    return utr_train, utr_val, y_train, y_val
 
 @hydra.main(config_path="./config", config_name="train", version_base=None)
 def main(cfg: DictConfig):
@@ -129,8 +162,9 @@ def main(cfg: DictConfig):
     print("Hydra configuration loaded:")
     print(cfg)
 
-    filtered_df, max_len = load_and_filter_data(cfg.data.input_csv)
-    seq_train, seq_test, y_train, y_test = prepare_features_and_split(filtered_df, max_len, cfg.train.batch_size)
+    filtered_df, max_len = load_and_filter_data(cfg)
+    val_size = cfg.data.val_ratio/(1 - cfg.data.holdout_test_ratio)
+    seq_train, seq_val, y_train, y_val = prepare_features_and_split(filtered_df, max_len, cfg.train.batch_size,val_size=val_size)
 
     # Prepare training dataset
     train_dataset = create_dataset(
@@ -140,7 +174,7 @@ def main(cfg: DictConfig):
         
     )
     val_dataset = create_val_dataset(
-        seq_test, y_test, 
+        seq_val, y_val, 
         max_len=max_len, 
         batch_size=cfg.train.batch_size)
 
