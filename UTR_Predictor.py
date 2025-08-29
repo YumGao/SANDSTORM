@@ -109,7 +109,7 @@ for i in range(iterations):
         ppm_len=ppm_len,
         latent_dim=latent_dim,
         internal_activation='relu'
-    )
+    )indices,
     joint_model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
 
     # Train

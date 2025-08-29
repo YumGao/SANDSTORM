@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
-from tensorflow.keras.optimizers import Adam
+#from tensorflow.keras.optimizers import Adam
+import tensorflow_addons as tfa
 import random
 
 
@@ -95,7 +96,7 @@ def load_and_filter_data(cfg):
     df = pd.read_csv(cfg.data.input_csv)
     mask = ~df['sequence'].str.upper().str.contains('N', na=False)
     df = df[mask].copy()
-    df = df[df['sequence'].apply(len) == 120].reset_index(drop=True)
+    df = df[df['sequence'].apply(len) == 130].reset_index(drop=True)
     max_len = df["sequence"].str.len().max()
 
     # Split train_val and test by ratio from config
@@ -181,24 +182,32 @@ def main(cfg: DictConfig):
 
 
     # Training iterations
-    for i in range(cfg.train.iterations):
-        print(f"=== Iteration {i+1}/{cfg.train.iterations} ===")
+    print(f"=== Start Training ===")
 
 
         # Create model
-        joint_model = GA_util.create_SANDSTORM(
+    joint_model = GA_util.create_SANDSTORM(
             seq_len=max_len,
             ppm_len=max_len,
             latent_dim=cfg.train.latent_dim,
             internal_activation=cfg.settings.model.internal_activation
         )
-        joint_model.compile(
-            optimizer=Adam(learning_rate=cfg.train.learning_rate),
-            loss='mse'
-        )
+
+        # AdamW optimizer with weight decay
+    optimizer = tfa.optimizers.AdamW(
+        learning_rate=cfg.train.learning_rate,  # e.g., 1e-3
+        weight_decay=cfg.train.weight_decay, # small decay to stabilize training
+        clipnorm=1.0
+    )
+
+    joint_model.compile(
+        optimizer=optimizer,
+        loss='mse',
+        metrics=['mae']  # optional: track mean absolute error
+    )
 
         # Train model
-        hist = joint_model.fit(
+    hist = joint_model.fit(
             train_dataset,
             epochs=cfg.train.epoch_num,
             validation_data=(val_dataset),
@@ -206,10 +215,10 @@ def main(cfg: DictConfig):
         )
 
         # Save model
-        os.makedirs(cfg.train.save_dir, exist_ok=True)
-        model_path = os.path.join(cfg.train.save_dir, f"{cfg.model_name}_model.h5")
-        joint_model.save(model_path)
-        print(f"Model saved to {model_path}")
+    os.makedirs(cfg.train.save_dir, exist_ok=True)
+    model_path = os.path.join(cfg.train.save_dir, f"{cfg.model_name}_model.h5")
+    joint_model.save(model_path)
+    print(f"Model saved to {model_path}")
 
 
 if __name__ == "__main__":
