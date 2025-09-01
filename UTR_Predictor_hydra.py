@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 #from tensorflow.keras.optimizers import Adam
 import tensorflow_addons as tfa
 import random
@@ -96,7 +97,7 @@ def load_and_filter_data(cfg):
     df = pd.read_csv(cfg.data.input_csv)
     mask = ~df['sequence'].str.upper().str.contains('N', na=False)
     df = df[mask].copy()
-    df = df[df['sequence'].apply(len) == 130].reset_index(drop=True)
+    df = df[df['sequence'].apply(len) == 201].reset_index(drop=True)
     max_len = df["sequence"].str.len().max()
 
     # Split train_val and test by ratio from config
@@ -211,8 +212,25 @@ def main(cfg: DictConfig):
             train_dataset,
             epochs=cfg.train.epoch_num,
             validation_data=(val_dataset),
-            callbacks=[MemoryCleanupCallback()]
+            callbacks = [
+                MemoryCleanupCallback(),
+                EarlyStopping(
+                    monitor=cfg.train.early_stop_monitor,
+                    patience=cfg.train.early_stop_patience,
+                    restore_best_weights=True,
+                    verbose=1
+                ),
+                ReduceLROnPlateau(
+                    monitor=cfg.train.early_stop_monitor,
+                    factor=cfg.train.reduce_lr_factor,
+                    patience=cfg.train.reduce_lr_patience,
+                    min_lr=cfg.train.min_lr,
+                    verbose=1
+                )
+            ]
         )
+
+
 
         # Save model
     os.makedirs(cfg.train.save_dir, exist_ok=True)
