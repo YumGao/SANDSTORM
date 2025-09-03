@@ -79,9 +79,8 @@ def create_val_dataset(x1, y, max_len, batch_size):
 
 # Then in main(), replace validation_data with:
 
-
 def save_split_dfs(trainval_df, test_df, base_dir, trainval_test_ratio, max_len):
-    split_dir = os.path.join(base_dir, f"trainval{1-trainval_test_ratio}_test{trainval_test_ratio}_len{max_len}")
+    split_dir = os.path.join(base_dir, f"trainval{1-trainval_test_ratio}_test{trainval_test_ratio}")
     os.makedirs(split_dir, exist_ok=True)
 
     trainval_path = os.path.join(split_dir, "trainval.csv")
@@ -128,7 +127,7 @@ def prepare_features_and_split(df, max_len, batch_size,val_size):
     # One-hot encode sequences
     utrs = util.one_hot_encode(df[['sequence']])
     indices = np.arange(utrs.shape[0])
-    holdout_test_ratio: 0.05
+    #holdout_test_ratio: 0.05
 
 
     # Train/test split
@@ -142,9 +141,6 @@ def prepare_features_and_split(df, max_len, batch_size,val_size):
         random_state=42
     )
 
-    # Save test sets
-    #np.save('utr_test.npy', utr_test)
-    #np.save('y_test.npy', y_test)
 
     # Ensure divisible by batch size
     num_samples = (len(utr_train) // batch_size) * batch_size
@@ -217,6 +213,7 @@ def main(cfg: DictConfig):
                 EarlyStopping(
                     monitor=cfg.train.early_stop_monitor,
                     patience=cfg.train.early_stop_patience,
+                    min_delta=cfg.train.early_stop_min_delta,
                     restore_best_weights=True,
                     verbose=1
                 ),
@@ -234,7 +231,18 @@ def main(cfg: DictConfig):
 
         # Save model
     os.makedirs(cfg.train.save_dir, exist_ok=True)
-    model_path = os.path.join(cfg.train.save_dir, f"{cfg.model_name}_model.h5")
+    # Get the final epoch metrics
+    final_epoch = len(hist.history['loss'])
+    train_loss = hist.history['loss'][-1]   # last epoch train loss
+    val_loss = hist.history['val_loss'][-1] # last epoch val loss
+
+    # Construct filename
+    model_path = os.path.join(
+        cfg.train.save_dir,
+        f"{cfg.model_name}_e{final_epoch:03d}_tl{train_loss:.3f}_vl{val_loss:.3f}.h5"
+    )
+
+    # Save model
     joint_model.save(model_path)
     print(f"Model saved to {model_path}")
 
