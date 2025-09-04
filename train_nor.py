@@ -70,7 +70,7 @@ class DatasetManager:
             test_size=self.cfg.data.holdout_test_ratio, 
             random_state=42
         )
-        print(f"Splitting holdout test set: \n\ttrain & val ({self.trainval_df.shape})\n\ttest ({self.test_df.shape})")
+        print(f"Splitting holdout test set: \n\ttrain & val ({1 - self.cfg.data.holdout_test_ratio},{self.trainval_df.shape})\n\ttest ({self.cfg.data.holdout_test_ratio},{self.test_df.shape})")
         
         # Save splits
         self._save_split_dfs()
@@ -96,7 +96,7 @@ class DatasetManager:
             test_size=val_size,
             random_state=42
         )
-        print(f"Splitting train/val: \n\ttrain ({self.train_df.shape})\n\tval ({self.val_df.shape})")
+        print(f"Splitting train/val: \n\ttrain ({1 - val_size},{self.train_df.shape})\n\tval ({val_size},{self.val_df.shape})")
         
         # One-hot encode sequences for train, val, and test
         self.seq_train = util.one_hot_encode(self.train_df[['sequence']])
@@ -199,7 +199,7 @@ def main(cfg: DictConfig):
     # AdamW optimizer with weight decay
     optimizer = tfa.optimizers.AdamW(
         learning_rate=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
+        weight眨decay=cfg.train.weight_decay,
         clipnorm=1.0
     )
     
@@ -233,20 +233,7 @@ def main(cfg: DictConfig):
         ]
     )
     
-    # Save model
-    os.makedirs(cfg.train.save_dir, exist_ok=True)
-    final_epoch = len(hist.history['loss'])
-    train_loss = hist.history['loss'][-1]
-    val_loss = hist.history['val_loss'][-1]
-    model_path = os.path.join(
-        cfg.train.save_dir, 
-        f"{cfg.model_name}_e{final_epoch:03d}_tl{train_loss:.3f}_vl{val_loss:.3f}.h5"
-    )
-    joint_model.save(model_path)
-    print(f"Model saved to {model_path}")
-    
-    
-        # Evaluate on test set
+    # Evaluate on test set
     print(f"=== Evaluating on Test Set ===")
     test_metrics = joint_model.evaluate(test_dataset, verbose=1, return_dict=True)
     test_loss = test_metrics['loss']
@@ -270,8 +257,17 @@ def main(cfg: DictConfig):
     print(f"  Train Loss (MSE): {train_loss:.3f}, Train MAE: {train_mae:.3f}")
     print(f"  Val Loss (MSE): {val_loss:.3f}, Val MAE: {val_mae:.3f}")
     print(f"  Test Loss (MSE): {test_loss:.3f}, Test MAE: {test_mae:.3f}, Test Spearman R: {spearman_r:.3f}")
-    print(f"  Test Spearman R (MSE): {spearman_r}")
-        # Save metrics to CSV
+    
+    # Save model
+    os.makedirs(cfg.train.save_dir, exist_ok=True)
+    model_path = os.path.join(
+        cfg.train.save_dir, 
+        f"{cfg.model_name}_e{final_epoch:03d}_tl{train_loss:.3f}_vl{val_loss:.3f}_testl{test_loss:.3f}_testmae{test_mae:.3f}_testspr{spearman_r:.3f}.h5"
+    )
+    joint_model.save(model_path)
+    print(f"Model saved to {model_path}")
+    
+    # Save metrics to CSV
     metrics_df = pd.DataFrame({
         'epoch': [final_epoch],
         'train_loss': [train_loss],
