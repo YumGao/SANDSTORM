@@ -10,10 +10,12 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+import joblib
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import tensorflow_addons as tfa
 import random
 from scipy.stats import spearmanr
+import matplotlib.pyplot as plt
 
 # Add custom module path
 sys.path.insert(1, "/home/nanoribo/SANDSTORM/GARDN-SANDSTORM-main/src")
@@ -108,10 +110,27 @@ class DatasetManager:
         y_raw_val = self.val_df['half_life'].values
         y_raw_test = self.test_df['half_life'].values
         
+        #print("train\n",self.train_df['half_life'].describe())
+        #print("val\n",self.val_df['half_life'].describe())
+        #print("test\n",self.test_df['half_life'].describe())
+        
         # Fit scaler on train labels only
         self.scaler.fit(y_raw_train.reshape(-1, 1))
+        print(f"Scaler fitted: mean={self.scaler.mean_[0]:.3f}, scale={self.scaler.scale_[0]:.3f}")
+    
+        # Save scaler
+        scaler_file = "sandstorm_scaler.pkl"
+    
+        joblib.dump(self.scaler, scaler_file)
+        print(f"Scaler saved to {scaler_file}")
         
         # Transform train, val, and test labels using the fitted scaler
+        
+        plt.hist(y_raw_train, bins=50, alpha=0.5, label="train")
+        plt.hist(y_raw_val, bins=50, alpha=0.5, label="val")
+        plt.hist(y_raw_test, bins=50, alpha=0.5, label="test")
+        #plt.legend(); plt.show()
+    
         self.y_train = self.scaler.transform(y_raw_train.reshape(-1, 1))
         self.y_val = self.scaler.transform(y_raw_val.reshape(-1, 1))
         self.y_test = self.scaler.transform(y_raw_test.reshape(-1, 1))
@@ -160,6 +179,12 @@ class DatasetManager:
         """Return test dataset."""
         return self.create_dataset(self.seq_test, self.y_test, batch_size, is_train=False)
 
+
+
+
+
+
+
 @hydra.main(config_path="./config", config_name="train", version_base=None)
 def main(cfg: DictConfig):
     seed = cfg.train.seed
@@ -176,14 +201,14 @@ def main(cfg: DictConfig):
     filtered_df, max_len = dataset_manager.load_and_filter_data()
     val_size = cfg.data.val_ratio / (1 - cfg.data.holdout_test_ratio)
     seq_train, seq_val, y_train, y_val = dataset_manager.prepare_features_and_split(
-        batch_size=cfg.train.batch_size, 
+        batch_size=cfg.data.batch_size, 
         val_size=val_size
     )
     
     # Prepare datasets
-    train_dataset = dataset_manager.get_train_dataset(cfg.train.batch_size)
-    val_dataset = dataset_manager.get_val_dataset(cfg.train.batch_size)
-    test_dataset = dataset_manager.get_test_dataset(cfg.train.batch_size)
+    train_dataset = dataset_manager.get_train_dataset(cfg.data.batch_size)
+    val_dataset = dataset_manager.get_val_dataset(cfg.data.batch_size)
+    test_dataset = dataset_manager.get_test_dataset(cfg.data.batch_size)
     
     # Training iterations
     print(f"=== Start Training ===")
@@ -193,7 +218,9 @@ def main(cfg: DictConfig):
         seq_len=max_len, 
         ppm_len=max_len, 
         latent_dim=cfg.train.latent_dim, 
-        internal_activation=cfg.settings.model.internal_activation
+        internal_activation=cfg.settings.model.internal_activation,
+        dropout_rate=cfg.train.dropout_rate,
+        l2_reg=cfg.train.l2_reg
     )
     
     # AdamW optimizer with weight decay
@@ -280,9 +307,16 @@ def main(cfg: DictConfig):
         'val_mae': [val_mae],
         'test_loss': [test_loss],
         'test_mae': [test_mae],
-        'test_spearman_r': [spearman_r]
+        'test_spearman_r': [spearman_r],
+        'test_spearman_r': [spearman_r],
+        'latent_dim': [cfg.train.latent_dim],
+        'learning_rate': [cfg.train.learning_rate],
+        'weight_decay': [cfg.train.weight_decay],
+        'batch_size': [cfg.data.batch_size],
+        'dropout_rate': [cfg.train.dropout_rate],  # Added
+        'l2_reg': [cfg.train.l2_reg]  # Added
     })
-    metrics_path = os.path.join(cfg.train.save_dir, f"{cfg.model_name}_metrics_e{final_epoch:03d}.csv")
+    metrics_path = os.path.join(cfg.train.save_dir, f"{cfg.model_name}_metrics_spr{spearman_r:.3f}.csv")
     metrics_df.to_csv(metrics_path, index=False)
     print(f"Metrics saved to {metrics_path}")
 
