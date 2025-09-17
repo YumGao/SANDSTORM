@@ -1,0 +1,200 @@
+import sys
+import os
+import glob
+import hydra
+from omegaconf import DictConfig
+import tensorflow as tf
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from scipy.stats import spearmanr
+import matplotlib.pyplot as plt
+import joblib
+import tensorflow_addons as tfa
+
+# Add custom module path
+sys.path.insert(1, "/home/nanoribo/SANDSTORM/GARDN-SANDSTORM-main/src")
+import util
+import GA_util
+
+def setup_gpu():
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"Using GPU(s): {[gpu.name for gpu in gpus]}")
+        except RuntimeError as e:
+            print(f"Error setting up GPU memory growth: {e}")
+    else:
+        print("No GPU detected, running on CPU.")
+
+class TestDatasetManager:
+    """Manages loading and processing of test data, aligned with training."""
+    
+    def __init__(self, cfg, model_path):
+        self.cfg = cfg
+        self.model_path = model_path
+        self.scaler = joblib.load(os.path.join(cfg.test.best_model_path, "sandstorm_scaler.pkl"))
+        self.max_len = None
+        self.test_df = None
+        self.seq_test = None
+        self.y_test = None
+        self.y_test_orig = None
+        # Load model to get max_len
+        with tf.keras.utils.custom_object_scope({'AdamW': tfa.optimizers.AdamW}):
+            model = tf.keras.models.load_model(self.model_path)
+        # Extract max_len from sequence and contact map inputs
+        seq_max_len = model.input[0].shape[2]  # (None, 4, max_len)
+        contact_max_len = model.input[1].shape[1]  # (None, max_len, max_len)
+        print(f"Sequence max_len: {seq_max_len}")
+        print(f"Contact map max_len: {contact_max_len}")
+        if seq_max_len != contact_max_len:
+            raise ValueError(f"Input dimension mismatch: sequence max_len ({seq_max_len}) != contact map max_len ({contact_max_len})")
+        self.max_len = seq_max_len
+        print(f"Using max_len: {self.max_len}")
+    
+    def load_and_filter_test_data(self):
+        """Load and filter the test DataFrame, matching training preprocessing."""
+        df = pd.read_csv(self.cfg.test.test_csv)
+        mask = ~df['sequence'].str.upper().str.contains('N', na=False)
+        df = df[mask].copy()
+        self.test_df = df
+        print(f"Loaded and filtered test data: {self.test_df.shape}")
+        print(f"Test sequence length stats: min={df['sequence'].str.len().min()}, max={df['sequence'].str.len().max()}")
+        return self.test_df, self.max_len
+    
+    def prepare_test_features(self):
+        """Encode sequences and transform labels using the loaded scaler."""
+        self.seq_test = util.one_hot_encode(self.test_df[['sequence']])
+        self.y_test_orig = self.test_df['half_life'].values  # Original for evaluation
+        self.y_test = self.scaler.transform(self.y_test_orig.reshape(-1, 1))  # Scaled for consistency
+        return self.seq_test, self.y_test_orig
+    
+    def pad_sequence(self, batch_x1):
+        """Pad a batch of sequences to (batch_size, 4, max_len) with -1."""
+        seq_len = batch_x1.shape[2]
+        padded = np.full((batch_x1.shape[0], 4, self.max_len), -1.0, dtype=np.float32)
+        padded[:, :, :seq_len] = batch_x1
+        return padded
+    
+    def pad_contact_map(self, batch_x2):
+        """Pad a batch of contact maps to (batch_size, max_len, max_len) with -1."""
+        seq_len = batch_x2.shape[1]
+        padded = np.full((batch_x2.shape[0], self.max_len, self.max_len), -1.0, dtype=np.float32)
+        padded[:, :seq_len, :seq_len] = batch_x2
+        return padded
+    
+    def create_test_dataset(self, batch_size):
+        """Create tf.data.Dataset for test, matching training dataset structure."""
+        def generator():
+            for i in range(0, len(self.seq_test), batch_size):
+                batch_x1 = self.seq_test[i:i + batch_size]
+                batch_y = self.y_test[i:i + batch_size]
+                padded_batch_x1 = self.pad_sequence(batch_x1)
+                batch_x2 = GA_util.prototype_ppms_fast(padded_batch_x1)
+                padded_batch_x2 = self.pad_contact_map(batch_x2)
+                yield (padded_batch_x1, padded_batch_x2), batch_y
+        
+        output_signature = (
+            (
+                tf.TensorSpec(shape=(None, 4, self.max_len), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, self.max_len, self.max_len), dtype=tf.float32)
+            ),
+            tf.TensorSpec(shape=(None, 1), dtype=tf.float32)
+        )
+        return tf.data.Dataset.from_generator(
+            generator, 
+            output_signature=output_signature
+        ).prefetch(tf.data.AUTOTUNE)
+    
+    def get_original_labels(self, y_scaled):
+        """Inverse transform scaled labels to original scale."""
+        return self.scaler.inverse_transform(y_scaled.reshape(-1, 1)).flatten()
+
+@hydra.main(config_path="./config", config_name="test", version_base=None)
+def main(cfg: DictConfig):
+    setup_gpu()
+    print("Hydra configuration loaded:")
+    print(cfg)
+    
+    # Find and load model from best_model_path
+    model_files = glob.glob(os.path.join(cfg.test.best_model_path, "*.h5"))
+    if not model_files:
+        raise FileNotFoundError(f"No .h5 model files found in {cfg.test.best_model_path}")
+    if len(model_files) > 1:
+        print(f"Warning: Multiple .h5 files found in {cfg.test.best_model_path}. Using the first one: {model_files[0]}")
+    model_path = model_files[0]
+    
+    # Initialize test dataset manager
+    test_manager = TestDatasetManager(cfg, model_path)
+    test_df, max_len = test_manager.load_and_filter_test_data()
+    seq_test, y_test_orig = test_manager.prepare_test_features()
+    
+    # Create test dataset
+    test_dataset = test_manager.create_test_dataset(cfg.data.batch_size)
+    
+    # Load model for evaluation
+    with tf.keras.utils.custom_object_scope({'AdamW': tfa.optimizers.AdamW}):
+        joint_model = tf.keras.models.load_model(model_path)
+    print(f"Loaded model from {model_path}")
+    
+    # Obtain predictions (scaled)
+    y_pred_scaled = joint_model.predict(test_dataset, verbose=1)
+    
+    # Inverse transform predictions to original scale
+    y_pred = test_manager.get_original_labels(y_pred_scaled)
+    
+    # Compute performance metrics on original scale
+    mse = mean_squared_error(y_test_orig, y_pred)
+    mae = mean_absolute_error(y_test_orig, y_pred)
+    spearman_r, _ = spearmanr(y_test_orig, y_pred)
+    
+    # Print metrics
+    print(f"Test Metrics:")
+    print(f"  MSE: {mse:.3f}")
+    print(f"  MAE: {mae:.3f}")
+    print(f"  Spearman R: {spearman_r:.3f}")
+    
+    # Save metrics to CSV
+    os.makedirs(cfg.test.output_dir, exist_ok=True)
+    metrics_df = pd.DataFrame({
+        'mse': [mse],
+        'mae': [mae],
+        'spearman_r': [spearman_r],
+        'model_path': [model_path],
+        'scaler_path': [os.path.join(cfg.test.best_model_path, "sandstorm_scaler.pkl")]
+    })
+    metrics_path = os.path.join(cfg.test.output_dir, f"{cfg.model_name}_test_metrics.csv")
+    metrics_df.to_csv(metrics_path, index=False)
+    print(f"Metrics saved to {metrics_path}")
+    
+    # Visualization 1: Scatter plot of true vs predicted
+    plt.figure(figsize=(8, 6))
+    plt.scatter(y_test_orig, y_pred, alpha=0.5, label='Predictions')
+    plt.plot([min(y_test_orig), max(y_test_orig)], [min(y_test_orig), max(y_test_orig)], 'r--', label='Ideal')
+    plt.xlabel('True Half-Life')
+    plt.ylabel('Predicted Half-Life')
+    plt.title(f'True vs Predicted Half-Life (Spearman R: {spearman_r:.3f})')
+    plt.legend()
+    scatter_plot_path = os.path.join(cfg.test.output_dir, f"{cfg.model_name}_true_vs_pred_scatter.png")
+    plt.savefig(scatter_plot_path)
+    plt.close()
+    print(f"Scatter plot saved to {scatter_plot_path}")
+    
+    # Visualization 2: Residual plot
+    residuals = y_test_orig - y_pred
+    plt.figure(figsize=(8, 6))
+    plt.scatter(y_pred, residuals, alpha=0.5, label='Residuals')
+    plt.axhline(y=0, color='r', linestyle='--', label='Zero Residual')
+    plt.xlabel('Predicted Half-Life')
+    plt.ylabel('Residual (True - Predicted)')
+    plt.title('Residual Plot')
+    plt.legend()
+    residual_plot_path = os.path.join(cfg.test.output_dir, f"{cfg.model_name}_residual_plot.png")
+    plt.savefig(residual_plot_path)
+    plt.close()
+    print(f"Residual plot saved to {residual_plot_path}")
+
+if __name__ == "__main__":
+    main()
